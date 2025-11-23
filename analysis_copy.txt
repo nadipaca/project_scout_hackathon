@@ -1,0 +1,11 @@
+{
+  "goal_text": "User wants to build an AI project for their portfolio using the latest tools and libraries, at an intermediate skill level.",
+  "difficulty": "intermediate",
+  "time_budget": "1-2 weeks",
+  "preferred_stack": "Python + LangChain",
+  "search_keywords": "AI projects with Python and LangChain",
+  "project_type": "idea",
+  "recency_preference": "latest",
+  "domain": "AI",
+  "goal_type": "portfolio"
+}

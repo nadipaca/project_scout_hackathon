@@ -1,0 +1,14 @@
+Running full agent flow...
+================================================================================
+DEBUG: AgentInput: {'goal_text': 'The user wants to build an AI project for their portfolio to enhance their job search and LinkedIn presence.', 'difficulty': 'intermediate', 'time_budget': '1-2 weeks', 'preferred_stack': 'Python + LangChain', 'search_keywords': 'AI project ideas, machine learning python, langchain projects', 'project_type': 'idea', 'recency_preference': 'latest', 'domain': 'AI', 'goal_type': 'portfolio'}
+DEBUG: Search Query: AI project ideas, machine learning python, langchain projects stars:>100 created:>2022-01-01
+DEBUG: No items found. Status: 200
+DEBUG: Response: {'total_count': 0, 'incomplete_results': False, 'items': []}
+DEBUG: Found 0 repos
+================================================================================
+Finished: True
+Last message length: 27 chars
+Last message content:
+No suitable projects found.
+✗ Not valid JSON. Error: Expecting value: line 1 column 1 (char 0)
+Content: No suitable projects found.

@@ -163,6 +163,15 @@ class ProjectScoutAgent(BaseAgent):
         """
         query = input_data.search_keywords or input_data.preferred_stack or input_data.goal_text
         
+        # Clean up the query by removing non-technical terms
+        unwanted_terms = ['project', 'projects', 'ideas', 'idea', 'portfolio', 'beginner', 'intermediate', 'advanced', 'learning', 'simple']
+        query_words = query.split()
+        filtered_words = [word for word in query_words if word.lower() not in unwanted_terms and not all(c in ',' for c in word)]
+        query = ' '.join(filtered_words) if filtered_words else query
+        
+        print(f"DEBUG: Original keywords: {input_data.search_keywords}")
+        print(f"DEBUG: Cleaned query: {query}")
+        
         # Construct GitHub API query
         # We want recent, non-trivial repos.
         # created:>2023-01-01

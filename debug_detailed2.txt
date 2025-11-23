@@ -1,0 +1,11 @@
+Running full agent flow...
+================================================================================
+================================================================================
+Finished: False
+Last message length: 173 chars
+Last message content:
+What type of project are you most interested in (repo/tutorial/idea)?
+Do you have a preference for the latest tools and libraries in AI, or are you open to any technologies?
+✗ Not valid JSON. Error: Expecting value: line 1 column 1 (char 0)
+Content: What type of project are you most interested in (repo/tutorial/idea)?
+Do you have a preference for the latest tools and libraries in AI, or are you open to any technologies?
