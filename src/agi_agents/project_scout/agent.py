@@ -8,6 +8,7 @@ from datetime import datetime
 from openai import AsyncOpenAI
 from arena import BaseAgent, AgentBrowser, AgentState
 from .models import AgentInput, AgentOutput, Project, Roadmap, Phase, StackOption, Clarification
+from . import advanced_rules
 
 class ProjectScoutAgent(BaseAgent):
     """
@@ -27,6 +28,10 @@ class ProjectScoutAgent(BaseAgent):
             api_key=api_key,
         )
         self.github_token = os.getenv("GITHUB_TOKEN")
+        
+        # Advanced rules tracking
+        self.clarification_count = 0
+        self.recent_responses = []
 
     async def step(self, browser: AgentBrowser, state: AgentState) -> AgentState:
         """
@@ -53,6 +58,7 @@ class ProjectScoutAgent(BaseAgent):
         
         if isinstance(analysis, Clarification):
             # Ask questions
+            self.clarification_count += 1  # Track for ambiguity cooldown
             questions_text = "\n".join(analysis.questions)
             state.messages.append({"role": "assistant", "content": questions_text})
             # We are NOT finished, we wait for user input.
@@ -61,6 +67,17 @@ class ProjectScoutAgent(BaseAgent):
             
         # If we got AgentInput, we proceed
         agent_input = analysis
+        
+        # Reset clarification count on successful analysis
+        self.clarification_count = 0
+        
+        # Track user response for ambiguity detection
+        if state.messages:
+            last_user_msg = next((msg["content"] for msg in reversed(state.messages) if msg["role"] == "user"), "")
+            if last_user_msg:
+                self.recent_responses.append(last_user_msg)
+                # Keep only last 5 responses
+                self.recent_responses = self.recent_responses[-5:]
         
         # 2. Search GitHub
         repos = await self._search_github(agent_input)
@@ -93,16 +110,112 @@ class ProjectScoutAgent(BaseAgent):
         return state
 
     async def _analyze_request(self, context: str) -> AgentInput | Clarification:
+        """
+        Analyze user request with advanced rules integration.
+        
+        This method now includes 11 advanced rules:
+        1. Motivation & Learning Style Detection
+        2. Constraint Conflict Detection
+        3. Ambiguity Cooldown
+        4. Persona-Based Scaffolding
+        5. Inspiration-Driven Discovery
+        6. Context-Aware Ideation
+        7. Reuse/Upgrade Existing Project
+        8. Locale/Market Awareness
+        9. Privacy Sensitivity
+        10. Quality/Showcase/Polish Emphasis
+        11. Upgrade Path & Portfolio Story
+        """
+        
+        # ===== ADVANCED RULES DETECTION (Pre-LLM) =====
+        
+        # Rule 1: Motivation & Learning Style Detection
+        motivation_state = advanced_rules.detect_motivation_state(context)
+        adaptive_tone = advanced_rules.get_adaptive_tone(motivation_state)
+        
+        # Rule 3: Ambiguity Cooldown
+        apply_cooldown = advanced_rules.should_apply_ambiguity_cooldown(
+            self.clarification_count, 
+            self.recent_responses
+        )
+        
+        # If cooldown applies, use sensible defaults
+        if apply_cooldown:
+            defaults = advanced_rules.generate_sensible_defaults()
+            return AgentInput(
+                goal_text=context,
+                difficulty=defaults["difficulty"],
+                time_budget=defaults["time_budget"],
+                project_type=defaults["project_type"],
+                recency_preference=defaults["recency_preference"],
+                cost_constraints=defaults["cost_constraints"],
+                deployment_target=defaults["deployment_target"],
+                collaboration_mode=defaults["collaboration_mode"],
+                doc_emphasis=defaults["doc_emphasis"],
+                quality_focus=defaults["quality_focus"],
+                focus_area=defaults["focus_area"],
+                confidence_level=defaults["confidence_level"],
+                motivation_state=motivation_state,
+                clarification_count=self.clarification_count,
+                search_keywords="python web"  # Basic default
+            )
+        
+        # Rule 4: Persona-Based Scaffolding
+        skill_bridge = advanced_rules.detect_skill_bridge_opportunity(context)
+        
+        # Rule 5: Inspiration-Driven Discovery
+        needs_inspiration = advanced_rules.detect_inspiration_need(context)
+        
+        # Rule 6: Context-Aware Ideation
+        wants_trending = advanced_rules.detect_trending_request(context)
+        
+        # Rule 7: Reuse/Upgrade Existing Project
+        upgrade_info = advanced_rules.detect_upgrade_intent(context)
+        
+        # Rule 8: Locale/Market Awareness
+        locale = advanced_rules.detect_locale_or_market(context)
+        
+        # Rule 9: Privacy Sensitivity
+        privacy_mode = advanced_rules.detect_privacy_concerns(context)
+        
+        # Rule 10: Quality/Showcase/Polish Emphasis
+        quality_analysis = advanced_rules.analyze_quality_emphasis(context)
+        
+        # Build context for LLM with advanced rules insights
+        advanced_context = f"""
+        
+        === ADVANCED RULES DETECTION ===
+        Motivation State: {motivation_state}
+        {f"Adaptive Tone: {adaptive_tone}" if adaptive_tone else ""}
+        {f"Skill Bridge Opportunity: {skill_bridge['suggestion']}" if skill_bridge else ""}
+        {f"Inspiration Needed: User needs open-ended discovery questions" if needs_inspiration else ""}
+        {f"Trending Request: Focus on latest/hot technologies" if wants_trending else ""}
+        {f"Upgrade Mode: {upgrade_info['suggestion']}" if upgrade_info else ""}
+        {f"Locale/Market: {locale}" if locale else ""}
+        {f"Privacy Mode: Suggest local-only, no cloud APIs" if privacy_mode else ""}
+        Quality Focus: {quality_analysis['quality_focus']}
+        Doc Emphasis: {quality_analysis['doc_emphasis']}
+        
+        INSTRUCTIONS BASED ON ADVANCED RULES:
+        {f"- Use encouraging, supportive tone. Suggest smaller, achievable projects." if motivation_state in ["overwhelmed", "failed-projects"] else ""}
+        {f"- Ask open-ended questions about interests rather than technical details." if needs_inspiration else ""}
+        {f"- Generate UPGRADE ROADMAP for existing {upgrade_info['existing_tech']} project, NOT new project suggestions." if upgrade_info else ""}
+        {f"- Suggest LOCAL-FIRST solutions (Ollama, LocalAI, local models). Avoid cloud APIs." if privacy_mode else ""}
+        {f"- Adapt suggestions for {locale} market (localization, regional preferences)." if locale else ""}
+        {f"- Emphasize production-ready features: tests, CI/CD, documentation." if quality_analysis['quality_focus'] == 'production' else ""}
+        """
+        
         prompt = f"""
         You are ProjectScout AI. Analyze the conversation to understand the user's project goal.
         
         Context:
         {context}
+        {advanced_context}
         
         Your task:
         1. Infer the following fields:
-           - domain (e.g. AI, web)
-           - tech_stack (e.g. Python, React)
+           - domain (e.g. AI, web, mobile, backend, data science)
+           - tech_stack (infer from user's request - could be any language/framework combination)
            - difficulty (beginner/intermediate/advanced)
            - time_budget (weekend/1-2 weeks/3+ weeks)
            - project_type (repo/tutorial/idea)
@@ -194,7 +307,13 @@ class ProjectScoutAgent(BaseAgent):
             "focus_area": "frontend" | "backend" | "balanced",
             "confidence_level": "beginner-anxious" | "intermediate-confident" | "advanced",
             "has_existing_project": boolean,
-            "existing_project_tech": string
+            "existing_project_tech": string,
+            "motivation_state": "uninspired" | "overwhelmed" | "failed-projects" | "normal",
+            "skill_bridge_needed": boolean,
+            "locale_preference": string | null,
+            "privacy_mode": boolean,
+            "upgrade_mode": boolean,
+            "upgrade_project_info": string | null
         }}
         
         CRITICAL EXAMPLES FOR search_keywords (STUDY THESE):
@@ -211,26 +330,33 @@ class ProjectScoutAgent(BaseAgent):
         ✓ "opencv computer-vision python"
         ✓ "scikit-learn classification"
         ✓ "langchain rag chatbot"
-        ✓ "react flask full-stack"
+        ✓ "[frontend-framework] [backend-framework] full-stack" (use actual user-preferred technologies)
         
         RULES FOR search_keywords:
         1. Use actual technology names (transformers, opencv, scikit-learn)
         2. Use hyphenated project types (recommendation-engine, chatbot, image-classifier)
-        3. Combine tech + domain (python nlp, react dashboard, pytorch vision)
+        3. Combine tech + domain (python nlp, [user-framework] dashboard, pytorch vision)
         4. NEVER use: project, ideas, portfolio, learning, beginner, intermediate, advanced
         5. Think: "What would this repo be tagged/named on GitHub?"
         6. CRITICAL: When user wants DIVERSE project types (NLP, CV, web apps):
-           - Generate COMMA-SEPARATED query groups: "python nlp transformers, opencv computer-vision, react flask"
+           - Generate COMMA-SEPARATED query groups: "python nlp transformers, opencv computer-vision, [user-stack] web"
            - NOT space-separated mashups like "nlp opencv react"
            - This ensures we search for each domain separately!
         
-        DOMAIN -> KEYWORD MAPPING:
-        - "AI/ML" -> "python machine-learning scikit-learn" or "pytorch tensorflow"
-        - "NLP" -> "python nlp transformers spacy"
-        - "Computer Vision" -> "opencv computer-vision pytorch"
-        - "Recommender" -> "recommendation-engine collaborative-filtering"
-        - "Web + AI" -> "flask fastapi react chatbot"
-        - "Data Science" -> "python pandas jupyter data-analysis"
+        DOMAIN -> KEYWORD MAPPING (Use user's preferred stack when available):
+        - "AI/ML" -> Infer from user's tech stack:
+          * Python: "python machine-learning", "pytorch", "tensorflow", "scikit-learn"
+          * Java/Spring: "spring-ai", "langchain4j java", "java machine-learning"
+          * JavaScript: "tensorflow-js", "brain-js", "ml5-js"
+          * General: If user mentions specific framework, USE IT (e.g., "Spring AI" -> "spring-ai")
+        - "NLP" -> Combine with user's language preference (e.g., "python nlp transformers", "java nlp", "nodejs nlp")
+        - "Computer Vision" -> Use user's tech stack (e.g., "opencv computer-vision", "pytorch vision", "tensorflow vision")
+        - "Recommender" -> "recommendation-engine collaborative-filtering" + user's stack
+        - "Web + AI" -> Use user's preferred frontend/backend (e.g., "[backend] [frontend] chatbot")
+        - "Data Science" -> Combine with user's language (e.g., "python pandas", "R data-analysis", "julia statistics")
+        - For any domain: ALWAYS incorporate the user's preferred_stack if specified
+        
+        CRITICAL: If user mentions a specific framework (Spring AI, LangChain4j, etc.), preserve it exactly in search_keywords!
         """
         
         response = await self.client.chat.completions.create(
@@ -243,7 +369,24 @@ class ProjectScoutAgent(BaseAgent):
         if "questions" in data:
             return Clarification(**data)
         else:
-            return AgentInput(**data)
+            agent_input = AgentInput(**data)
+            
+            # Rule 2: Constraint Conflict Detection (Post-LLM)
+            # Check if the inferred difficulty/time/domain combination is realistic
+            conflict_message = advanced_rules.detect_constraint_conflicts(
+                agent_input.difficulty,
+                agent_input.time_budget,
+                agent_input.domain
+            )
+            
+            # If there's a conflict, return a clarification with rescoping options
+            if conflict_message:
+                return Clarification(
+                    questions=[conflict_message],
+                    reasoning="Detected potential constraint conflict between difficulty, time, and scope."
+                )
+            
+            return agent_input
 
     async def _search_github(self, input_data: AgentInput) -> List[Dict]:
         """
@@ -252,19 +395,26 @@ class ProjectScoutAgent(BaseAgent):
         query = input_data.search_keywords or input_data.preferred_stack or input_data.goal_text
         
         # Safety net: Map conceptual terms to technical GitHub search terms
+        # Incorporate user's preferred_stack when available
+        user_stack = (input_data.preferred_stack or "").lower()
+        
         keyword_map = {
-            'nlp': 'python nlp transformers spacy',
-            'natural language processing': 'python nlp transformers',
+            'nlp': f'{user_stack} nlp' if user_stack else 'nlp transformers',
+            'natural language processing': f'{user_stack} nlp' if user_stack else 'nlp transformers',
             'recommender': 'recommendation-engine collaborative-filtering',
             'recommendation': 'recommendation-engine',
-            'computer vision': 'opencv computer-vision pytorch',
-            'cv': 'opencv pytorch vision',
-            'chatbot': 'chatbot langchain rasa',
-            'machine learning': 'python machine-learning scikit-learn',
-            'deep learning': 'pytorch tensorflow keras',
-            'data science': 'python pandas jupyter data-analysis',
-            'web app': 'react flask django',
-            'full stack': 'react nodejs mongodb',
+            'computer vision': f'{user_stack} computer-vision' if user_stack else 'computer-vision opencv',
+            'cv': f'{user_stack} vision' if user_stack else 'opencv vision',
+            'chatbot': f'{user_stack} chatbot' if user_stack else 'chatbot',
+            'machine learning': f'{user_stack} machine-learning' if user_stack else 'machine-learning',
+            'deep learning': f'{user_stack} deep-learning' if user_stack else 'deep-learning',
+            'data science': f'{user_stack} data-analysis' if user_stack else 'data-analysis',
+            'web app': f'{user_stack} web' if user_stack else 'web application',
+            'full stack': f'{user_stack} full-stack' if user_stack else 'full-stack',
+            # Java/Spring AI frameworks
+            'spring ai': 'spring-ai',
+            'langchain4j': 'langchain4j java',
+            'java ai': 'java machine-learning',
         }
         
         # Apply mapping if query contains conceptual terms
@@ -274,10 +424,6 @@ class ProjectScoutAgent(BaseAgent):
                 query = query.replace(concept, technical)
                 query = query.replace(concept.title(), technical)
                 query = query.replace(concept.upper(), technical)
-        
-        # Clean up: remove vague non-technical terms
-        remove_terms = {'project', 'projects', 'idea', 'ideas', 'portfolio', 
-                       'beginner', 'intermediate', 'advanced', 'learning', 'simple', 'ai', 'ml'}
         
         # Split by commas to handle diverse queries
         # E.g., "python nlp transformers, opencv pytorch, react flask" -> search ALL separately
@@ -289,13 +435,43 @@ class ProjectScoutAgent(BaseAgent):
         async with httpx.AsyncClient() as client:
             for alt_query in alternatives:
                 # Clean this specific alternative
-                words = alt_query.split()
-                filtered_words = [w for w in words if w.lower() not in remove_terms and len(w) > 2]
+                # IMPORTANT: Preserve framework-specific terms like "spring-ai", "Spring AI"
+                # Only remove standalone vague terms
                 
-                if not filtered_words:
-                    continue  # Skip empty queries
+                # First, check if this is a hyphenated framework term (e.g., "spring-ai")
+                if '-ai' in alt_query.lower() or '-ml' in alt_query.lower():
+                    # Don't filter out words from hyphenated framework names
+                    query = alt_query
+                else:
+                    # Remove vague non-technical standalone terms
+                    remove_terms = {'project', 'projects', 'idea', 'ideas', 'portfolio', 
+                                   'beginner', 'intermediate', 'advanced', 'learning', 'simple'}
+                    
+                    # Special handling: only remove 'ai' or 'ml' if they're standalone
+                    # Don't remove if part of "Spring AI", "Java AI", etc.
+                    words = alt_query.split()
+                    filtered_words = []
+                    for i, w in enumerate(words):
+                        w_lower = w.lower()
+                        # Remove if it's a vague term
+                        if w_lower in remove_terms and len(w) > 2:
+                            continue
+                        # Remove 'ai' or 'ml' ONLY if standalone (not preceded by a framework name)
+                        if w_lower in {'ai', 'ml'}:
+                            # Check if previous word is a framework/language
+                            if i > 0 and words[i-1].lower() in {'spring', 'java', 'python', 'javascript', 'nodejs', 'react', 'angular', 'vue'}:
+                                filtered_words.append(w)  # Keep it
+                            else:
+                                continue  # Remove standalone 'ai'/'ml'
+                        else:
+                            if len(w) > 2:
+                                filtered_words.append(w)
+                    
+                    query = ' '.join(filtered_words)
+                    
+                    if not filtered_words:
+                        continue  # Skip empty queries
                 
-                query = ' '.join(filtered_words)
                 print(f"DEBUG: Trying query: {query}")
                 
                 params = {
@@ -402,9 +578,9 @@ class ProjectScoutAgent(BaseAgent):
            - Explain: "I chose varied projects (NLP, CV, Web) so you can pick what excites you."
 
         2. Frontend/Full-stack Check:
-           - Check if repo has a frontend (React, Vue, HTML/JS).
-           - If backend-only, NOTE THIS in why_match: "Backend-only repo (great for adding your own React UI)."
-           - If full-stack, highlight it: "Includes full React frontend."
+           - Check if repo has a frontend (any framework: React, Vue, Angular, Svelte, vanilla HTML/JS, etc.).
+           - If backend-only, NOTE THIS in why_match: "Backend-only repo (great for adding your own frontend UI)."
+           - If full-stack, highlight it: "Includes full [framework name] frontend." (specify actual framework found)
 
         3. Template Detection:
            - If project matches common patterns (SaaS dashboard, RAG chatbot, etc.)

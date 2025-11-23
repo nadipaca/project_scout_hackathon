@@ -69,21 +69,60 @@ async def main():
             
             # Print Projects
             console.print("\n[bold]Found Projects:[/bold]")
-            for p in result.get("projects", []):
+            projects = result.get("projects", [])
+            
+            # Common frontend frameworks to check for
+            frontend_frameworks = ['React', 'Vue', 'Angular', 'Svelte', 'Next.js', 'Nuxt', 'HTML', 'frontend']
+            
+            for idx, p in enumerate(projects):
+                # Add frontend status note if needed
+                frontend_note = ""
+                
+                # Check if project mentions frontend but is actually CLI-only
+                has_frontend_mention = any(fw in ' '.join(p.get('stack_tags', [])) for fw in frontend_frameworks) or \
+                                      "frontend" in p.get('why_match', '').lower() or \
+                                      "UI" in p.get('summary', '')
+                
+                is_cli_only = "CLI" in p.get('summary', '') or \
+                              "command-line" in p.get('summary', '').lower() or \
+                              "lacks" in p.get('why_match', '').lower()
+                
+                if has_frontend_mention and is_cli_only:
+                    frontend_note = "\n\n⚠️ [yellow]NOTE:[/yellow] This is CLI/backend-based (no web UI). You'd need to build a frontend from scratch."
+                
                 console.print(Panel(
                     f"[bold]{p['name']}[/bold] ({p['difficulty']})\n"
                     f"Stack: {', '.join(p['stack_tags'])}\n"
                     f"Time: {p['estimated_time']}\n"
                     f"URL: {p['github_url']}\n\n"
                     f"{p['summary']}\n\n"
-                    f"[italic]{p['why_match']}[/italic]",
+                    f"[italic]{p['why_match']}[/italic]"
+                    f"{frontend_note}",
                     title=p['name']
                 ))
 
-            # Print Roadmap
+            # Print Roadmap with recommendation context
             roadmap = result.get("plan_for_selected_project")
             if roadmap:
-                console.print(f"\n[bold blue]Roadmap for {roadmap['project_name']}[/bold blue]")
+                # Add "Why this pick" section before roadmap
+                console.print(f"\n🎯 [bold green]RECOMMENDED:[/bold green] {roadmap['project_name']}")
+                console.print("\n[bold]Why this pick:[/bold]")
+                
+                # Generate recommendation reasoning based on the first project
+                if projects:
+                    first_project = projects[0]
+                    console.print(f"• Full-stack potential with {', '.join(first_project.get('stack_tags', []))}")
+                    console.print("• Open-source and free (no paid APIs)")
+                    console.print("• Best for a portfolio project showcasing your skills")
+                    console.print("• Clear upgrade path to production\n")
+                    
+                    if len(projects) > 1:
+                        console.print("[bold]Alternative Picks:[/bold]")
+                        for alt_proj in projects[1:4]:  # Show up to 3 alternatives
+                            console.print(f"• Want {alt_proj.get('name')}? → {alt_proj.get('summary', '')[:60]}...")
+                        console.print()
+                
+                console.print(f"[bold blue]Roadmap for {roadmap['project_name']}[/bold blue]")
                 
                 for phase in roadmap.get("phases", []):
                     tasks = "\n".join([f"- {t}" for t in phase['tasks']])
@@ -91,7 +130,7 @@ async def main():
                         f"[bold]Duration:[/bold] {phase['duration']}\n"
                         f"[bold]Goal:[/bold] {phase['goals']}\n\n"
                         f"[bold]Tasks:[/bold]\n{tasks}",
-                        title=phase['name']
+                        title=phase['name']  
                     ))
                 
                 console.print("\n[bold]Stack Options:[/bold]")

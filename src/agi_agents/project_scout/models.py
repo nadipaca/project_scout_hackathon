@@ -23,6 +23,15 @@ class AgentInput(BaseModel):
     confidence_level: Optional[Literal["beginner-anxious", "intermediate-confident", "advanced"]] = None
     has_existing_project: Optional[bool] = None
     existing_project_tech: Optional[str] = None
+    
+    # Advanced Rule Tracking Fields (for 11 new rules)
+    motivation_state: Optional[Literal["uninspired", "overwhelmed", "failed-projects", "normal"]] = "normal"
+    clarification_count: Optional[int] = 0
+    skill_bridge_needed: Optional[bool] = False
+    locale_preference: Optional[str] = None
+    privacy_mode: Optional[bool] = False
+    upgrade_mode: Optional[bool] = False
+    upgrade_project_info: Optional[str] = None
 
 class Clarification(BaseModel):
     questions: List[str]

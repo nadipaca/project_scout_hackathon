@@ -4,8 +4,8 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from rich import print
 
-from arena.image import Base64Image
-from arena.errors import ArenaError
+from .image import Base64Image
+from .errors import ArenaError
 
 
 @dataclass
