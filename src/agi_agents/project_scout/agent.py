@@ -7,7 +7,7 @@ from datetime import datetime
 
 from openai import AsyncOpenAI
 from arena import BaseAgent, AgentBrowser, AgentState
-from .models import AgentInput, AgentOutput, Project, Roadmap, Phase, StackOption
+from .models import AgentInput, AgentOutput, Project, Roadmap, Phase, StackOption, Clarification
 
 class ProjectScoutAgent(BaseAgent):
     """
@@ -31,31 +31,42 @@ class ProjectScoutAgent(BaseAgent):
     async def step(self, browser: AgentBrowser, state: AgentState) -> AgentState:
         """
         Execute the ProjectScout workflow.
-        Since this is a vertical agent, we'll perform the main logic in one 'step' 
-        or a few steps, but for simplicity, we'll try to do it in one go 
-        and mark finished.
         """
         if state.finished:
             return state
 
-        # 1. Parse Input
-        # We assume state.goal contains the user's request.
-        # We'll try to parse it into our structured input using the LLM first
-        # to extract constraints if they aren't explicit.
+        # Collect all user messages to understand context
+        # In the demo script, state.goal is the initial input.
+        # Subsequent user inputs might be in state.messages if we were in a chat loop,
+        # but the harness/demo structure is a bit rigid.
+        # For now, let's assume state.goal + any "user" messages in state.messages form the context.
         
-        trace = []
-        trace.append(f"Received goal: {state.goal}")
-        
-        agent_input = await self._parse_input(state.goal)
-        trace.append(f"Parsed input: {agent_input}")
+        context = f"Initial Goal: {state.goal}\n"
+        for msg in state.messages:
+            if msg["role"] == "user":
+                context += f"User: {msg['content']}\n"
+            elif msg["role"] == "assistant":
+                context += f"Agent: {msg['content']}\n"
 
+        # 1. Analyze Request
+        analysis = await self._analyze_request(context)
+        
+        if isinstance(analysis, Clarification):
+            # Ask questions
+            questions_text = "\n".join(analysis.questions)
+            state.messages.append({"role": "assistant", "content": questions_text})
+            # We are NOT finished, we wait for user input.
+            # The demo script needs to handle this by checking if finished is False and last msg is assistant.
+            return state
+            
+        # If we got AgentInput, we proceed
+        agent_input = analysis
+        
         # 2. Search GitHub
         repos = await self._search_github(agent_input)
-        trace.append(f"Found {len(repos)} candidate repos from GitHub")
-
+        
         # 3. Classify and Select
         selected_projects = await self._classify_and_select(agent_input, repos)
-        trace.append(f"Selected {len(selected_projects)} best matches")
 
         if not selected_projects:
             state.messages.append({"role": "assistant", "content": "No suitable projects found."})
@@ -65,52 +76,86 @@ class ProjectScoutAgent(BaseAgent):
         # 4. Generate Roadmap for the top pick
         top_project = selected_projects[0]
         roadmap = await self._generate_roadmap(agent_input, top_project)
-        trace.append(f"Generated roadmap for {top_project.name}")
 
         # 5. Construct Output
         output = AgentOutput(
             projects=selected_projects,
             plan_for_selected_project=roadmap,
-            agent_trace=trace
+            agent_trace=["Analyzed request", "Searched GitHub", "Generated Roadmap"]
         )
 
-        # Store result in state (as a message or just print it)
-        # The benchmark harness expects some interaction, but for this vertical
-        # we'll just output the JSON result.
         state.messages.append({
             "role": "assistant", 
             "content": output.model_dump_json(indent=2)
         })
         
-        # Also store in a way that the demo script can easily retrieve?
-        # The harness uses state.messages, so that's fine.
-        
         state.finished = True
         return state
 
-    async def _parse_input(self, goal_text: str) -> AgentInput:
+    async def _analyze_request(self, context: str) -> AgentInput | Clarification:
         prompt = f"""
-        Analyze the following user goal for a coding project and extract constraints.
-        Also generate a list of 2-3 keywords to search GitHub for relevant repositories.
+        You are ProjectScout AI. Analyze the conversation to understand the user's project goal.
         
-        Goal: "{goal_text}"
+        Context:
+        {context}
         
-        Return a JSON object matching this schema:
+        Your task:
+        1. Infer the following fields:
+           - domain (e.g. AI, web)
+           - tech_stack (e.g. Python, React)
+           - difficulty (beginner/intermediate/advanced)
+           - time_budget (weekend/1-2 weeks/3+ weeks)
+           - project_type (repo/tutorial/idea)
+           - recency_preference (latest/any)
+           - goal_type (portfolio/learning/hackathon)
+           
+        2. Check for MISSING IMPORTANT INFO.
+           - If difficulty is unknown, ask.
+           - If project_type is unknown, ask.
+           - If recency matters (e.g. AI) and is unknown, ask.
+           - If time_budget is unknown for a concrete plan, ask.
+           - If tech_stack is unknown for a general request, ask.
+           
+        3. Rules for Clarification:
+           - Ask MAX 2 questions.
+           - If you can infer a reasonable default (e.g. "simple" -> beginner), DO NOT ask.
+           - If user says "any", pick a default (Intermediate, 1-2 weeks).
+           
+        4. Output:
+           - If you need clarification, return JSON with "questions" (list of strings) and "reasoning".
+           - If you have enough info (or defaults), return JSON matching AgentInput schema.
+           
+        Schema for Clarification:
         {{
-            "goal_text": "{goal_text}",
-            "difficulty": "beginner" | "intermediate" | "advanced" | null,
-            "time_budget": "weekend" | "1-2 weeks" | "3+ weeks" | null,
+            "questions": ["Question 1", "Question 2"],
+            "reasoning": "Why I need this info"
+        }}
+        
+        Schema for AgentInput:
+        {{
+            "goal_text": "summary of goal",
+            "difficulty": "beginner" | "intermediate" | "advanced",
+            "time_budget": "weekend" | "1-2 weeks" | "3+ weeks",
             "preferred_stack": string | null,
-            "search_keywords": "string joined by spaces"
+            "search_keywords": "string",
+            "project_type": "repo" | "tutorial" | "idea",
+            "recency_preference": "latest" | "any",
+            "domain": string,
+            "goal_type": string
         }}
         """
+        
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content)
-        return AgentInput(**data)
+        
+        if "questions" in data:
+            return Clarification(**data)
+        else:
+            return AgentInput(**data)
 
     async def _search_github(self, input_data: AgentInput) -> List[Dict]:
         """

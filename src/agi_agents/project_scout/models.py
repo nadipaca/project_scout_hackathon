@@ -7,6 +7,14 @@ class AgentInput(BaseModel):
     time_budget: Optional[Literal["weekend", "1-2 weeks", "3+ weeks"]] = None
     preferred_stack: Optional[str] = None
     search_keywords: Optional[str] = None
+    project_type: Optional[Literal["repo", "tutorial", "idea"]] = None
+    recency_preference: Optional[Literal["latest", "any"]] = None
+    domain: Optional[str] = None
+    goal_type: Optional[str] = None # portfolio, learning, etc.
+
+class Clarification(BaseModel):
+    questions: List[str]
+    reasoning: str
 
 class Project(BaseModel):
     name: str

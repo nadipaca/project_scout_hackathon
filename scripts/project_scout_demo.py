@@ -29,14 +29,25 @@ async def main():
     # Create state
     state = AgentState(goal=goal)
     
-    # Run agent (we pass None for browser as this agent uses API tools)
-    try:
-        await agent.step(None, state)
-    except Exception as e:
-        console.print(f"[bold red]Error running agent:[/bold red] {e}")
-        import traceback
-        traceback.print_exc()
-        return
+    # Run agent loop
+    while not state.finished:
+        try:
+            await agent.step(None, state)
+        except Exception as e:
+            console.print(f"[bold red]Error running agent:[/bold red] {e}")
+            import traceback
+            traceback.print_exc()
+            return
+
+        # Check if agent has a question (not finished, last msg is assistant)
+        if not state.finished and state.messages and state.messages[-1]["role"] == "assistant":
+            question = state.messages[-1]["content"]
+            console.print(Panel(f"[bold yellow]Agent:[/bold yellow] {question}"))
+            
+            # Get user answer
+            answer = console.input("[bold green]You:[/bold green] ")
+            state.messages.append({"role": "user", "content": answer})
+            continue
 
     # Display results
     if state.messages and state.messages[-1]["role"] == "assistant":
