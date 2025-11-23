@@ -279,74 +279,60 @@ class ProjectScoutAgent(BaseAgent):
         remove_terms = {'project', 'projects', 'idea', 'ideas', 'portfolio', 
                        'beginner', 'intermediate', 'advanced', 'learning', 'simple', 'ai', 'ml'}
         
-        # Split original query by commas to treat them as alternatives
-        # If the LLM gave us a list "NLP, CV", we shouldn't search for "NLP AND CV"
-        # We'll take the first valid technical chunk we find.
+        # Split by commas to handle diverse queries
+        # E.g., "python nlp transformers, opencv pytorch, react flask" -> try each separately
+        alternatives = [q.strip() for q in input_data.search_keywords.split(',')] if input_data.search_keywords else [input_data.preferred_stack or input_data.goal_text]
         
-        alternatives = input_data.search_keywords.split(',') if input_data.search_keywords else [input_data.preferred_stack or input_data.goal_text]
-        
-        final_query_parts = []
-        
-        for alt in alternatives:
-            # Apply mapping to this alternative
-            alt_lower = alt.lower()
-            for concept, technical in keyword_map.items():
-                if concept in alt_lower:
-                    alt = alt.replace(concept, technical)
-                    alt = alt.replace(concept.title(), technical)
-                    alt = alt.replace(concept.upper(), technical)
-            
-            # Filter words
-            words = alt.split()
-            filtered = [w for w in words if w.lower() not in remove_terms and len(w) > 2]
-            
-            if filtered:
-                # We found a valid technical query chunk!
-                final_query_parts = filtered
-                break # Stop after finding the first good alternative (e.g. just "NLP")
-        
-        query = ' '.join(final_query_parts) if final_query_parts else (input_data.domain or "python")
-        
-        print(f"DEBUG: Original keywords: {input_data.search_keywords}")
-        print(f"DEBUG: Mapped query: {query}")
-        
-        # Construct GitHub API query
-        # We want recent, non-trivial repos.
-        # created:>2023-01-01
-        
-        params = {
-            "q": f"{query} created:>2023-01-01",
-            "sort": "stars",
-            "order": "desc",
-            "per_page": 10
-        }
-        
-        headers = {"Accept": "application/vnd.github.v3+json"}
-        if self.github_token:
-            headers["Authorization"] = f"token {self.github_token}"
-
+        # Try each alternative until we find results
         async with httpx.AsyncClient() as client:
-            try:
-                resp = await client.get("https://api.github.com/search/repositories", params=params, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                items = data.get("items", [])
+            for alt_query in alternatives:
+                # Clean this specific alternative
+                words = alt_query.split()
+                filtered_words = [w for w in words if w.lower() not in remove_terms and len(w) > 2]
                 
-                # Fetch READMEs for the top 3 to save time/tokens
-                # Parallelize fetching to reduce latency
-                top_items = items[:3]
-                tasks = [self._fetch_readme(client, item["owner"]["login"], item["name"]) for item in top_items]
-                readmes = await asyncio.gather(*tasks)
+                if not filtered_words:
+                    continue  # Skip empty queries
                 
-                detailed_repos = []
-                for item, readme in zip(top_items, readmes):
-                    item["readme_content"] = readme
-                    detailed_repos.append(item)
+                query = ' '.join(filtered_words)
+                print(f"DEBUG: Trying query: {query}")
                 
-                return detailed_repos
-            except Exception as e:
-                print(f"GitHub search failed: {e}")
-                return []
+                params = {
+                    "q": f"{query} created:>2023-01-01",
+                    "sort": "stars",
+                    "order": "desc",
+                    "per_page": 10
+                }
+                
+                headers = {"Accept": "application/vnd.github.v3+json"}
+                if self.github_token:
+                    headers["Authorization"] = f"token {self.github_token}"
+
+                try:
+                    resp = await client.get("https://api.github.com/search/repositories", params=params, headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        items = data.get("items", [])
+                        
+                        if items:  # Found results!
+                            print(f"DEBUG: Found {len(items)} repositories for query: {query}")
+                            # Fetch READMEs for the top 3
+                            top_items = items[:3]
+                            tasks = [self._fetch_readme(client, item["owner"]["login"], item["name"]) for item in top_items]
+                            readmes = await asyncio.gather(*tasks)
+                            
+                            detailed_repos = []
+                            for item, readme in zip(top_items, readmes):
+                                item["readme_content"] = readme
+                                detailed_repos.append(item)
+                            
+                            return detailed_repos  # Return first successful search
+                except Exception as e:
+                    print(f"GitHub search failed for '{query}': {e}")
+                    continue  # Try next alternative
+
+            # All alternatives failed
+            print("DEBUG: No results found for any alternative")
+            return []
 
     async def _fetch_readme(self, client: httpx.AsyncClient, owner: str, repo: str) -> str:
         try:
