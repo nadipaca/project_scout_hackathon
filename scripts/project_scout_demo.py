@@ -39,15 +39,27 @@ async def main():
             traceback.print_exc()
             return
 
-        # Check if agent has a question (not finished, last msg is assistant)
-        if not state.finished and state.messages and state.messages[-1]["role"] == "assistant":
-            question = state.messages[-1]["content"]
-            console.print(Panel(f"[bold yellow]Agent:[/bold yellow] {question}"))
+        # Check for messages to display
+        if state.messages and state.messages[-1]["role"] == "assistant":
+            last_msg = state.messages[-1]["content"]
             
-            # Get user answer
-            answer = console.input("[bold green]You:[/bold green] ")
-            state.messages.append({"role": "user", "content": answer})
-            continue
+            # Case 1: Clarification Question (contains "questions" key or is a question)
+            # We'll assume if it's not valid JSON or has "questions", it might be a question.
+            # But for status updates, we'll use a specific prefix or just check if it's NOT the final JSON.
+            
+            if not state.finished:
+                # If it looks like a status update (short, no JSON structure usually)
+                if last_msg.startswith("[STATUS]"):
+                    status_text = last_msg.replace("[STATUS]", "").strip()
+                    console.print(f"[bold cyan]Update:[/bold cyan] {status_text}")
+                    continue
+                
+                # If it's a clarification question
+                if "?" in last_msg or "questions" in last_msg:
+                    console.print(Panel(f"[bold yellow]Agent:[/bold yellow] {last_msg}"))
+                    answer = console.input("[bold green]You:[/bold green] ")
+                    state.messages.append({"role": "user", "content": answer})
+                    continue
 
     # Display results
     if state.messages and state.messages[-1]["role"] == "assistant":
