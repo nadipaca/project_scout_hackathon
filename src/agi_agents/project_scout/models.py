@@ -1,4 +1,4 @@
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict
 from pydantic import BaseModel, Field
 
 class AgentInput(BaseModel):
@@ -11,6 +11,18 @@ class AgentInput(BaseModel):
     recency_preference: Optional[Literal["latest", "any"]] = None
     domain: Optional[str] = None
     goal_type: Optional[str] = None # portfolio, learning, etc.
+    
+    # V2 Advanced Fields
+    cost_constraints: Optional[Literal["free-only", "free-preferred", "any"]] = None
+    data_source_preference: Optional[Literal["own-data", "public-data", "any"]] = None
+    deployment_target: Optional[Literal["local", "web", "mobile", "cloud", "any"]] = None
+    collaboration_mode: Optional[Literal["solo", "team", "any"]] = None
+    doc_emphasis: Optional[Literal["low", "medium", "high"]] = None
+    quality_focus: Optional[Literal["prototype", "production"]] = None
+    focus_area: Optional[Literal["frontend", "backend", "balanced"]] = None
+    confidence_level: Optional[Literal["beginner-anxious", "intermediate-confident", "advanced"]] = None
+    has_existing_project: Optional[bool] = None
+    existing_project_tech: Optional[str] = None
 
 class Clarification(BaseModel):
     questions: List[str]
@@ -40,6 +52,12 @@ class Roadmap(BaseModel):
     github_url: str
     phases: List[Phase]
     stack_options: List[StackOption]
+    
+    # V2 Advanced Fields
+    upgrade_path: Optional[List[str]] = None
+    checkpoints: Optional[List[Dict[str, str]]] = None
+    scope_note: Optional[str] = None
+    deployment_strategy: Optional[str] = None  # New: Free/Cheap deployment advice
 
 class AgentOutput(BaseModel):
     projects: List[Project]

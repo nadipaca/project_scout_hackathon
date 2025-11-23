@@ -109,17 +109,60 @@ class ProjectScoutAgent(BaseAgent):
            - recency_preference (latest/any)
            - goal_type (portfolio/learning/hackathon)
            
+           # V2 Fields Inference:
+           - cost_constraints (free-only/free-preferred/any)
+           - data_source_preference (own-data/public-data/any)
+           - deployment_target (local/web/mobile/cloud/any)
+           - collaboration_mode (solo/team/any)
+           - doc_emphasis (low/medium/high)
+           - quality_focus (prototype/production)
+           - focus_area (frontend/backend/balanced)
+           - confidence_level (beginner-anxious/intermediate-confident/advanced)
+           - has_existing_project (true/false)
+           - existing_project_tech (string)
+           
         2. Check for MISSING IMPORTANT INFO.
            - If difficulty is unknown, ask.
-           - If project_type is unknown, ask.
            - If recency matters (e.g. AI) and is unknown, ask.
-           - If time_budget is unknown for a concrete plan, ask.
            - If tech_stack is unknown for a general request, ask.
+           - If time_budget is unknown, default to "1-2 weeks".
+           - If project_type is unknown, default to "repo".
            
-        3. Rules for Clarification:
-           - Ask MAX 2 questions.
-           - If you can infer a reasonable default (e.g. "simple" -> beginner), DO NOT ask.
-           - If user says "any", pick a default (Intermediate, 1-2 weeks).
+        3. ADVANCED ANALYSIS RULES (V2):
+           
+           A. Intent Splitting (Multi-Domain Detection):
+              - If user mentions 2+ unrelated domains (AI + web3 + mobile), return Clarification asking which to focus on first.
+              - Example: "I see AI, web3, and mobile. Which would you like to focus on first?"
+
+           B. Constraint Conflict Detection:
+              - Check if difficulty + time_budget are realistic.
+              - If "advanced distributed systems" + "weekend" -> ask to adjust.
+              - If "beginner" + "3+ weeks" -> suggest they could do intermediate.
+
+           C. User Confidence Detection:
+              - Words like "new", "stuck", "confused", "unsure" -> set confidence_level = "beginner-anxious"
+              - Words like "confident", "experienced", "familiar" -> set confidence_level = "advanced"
+              - Default -> "intermediate-confident"
+
+           D. Ambiguity Handling:
+              - If user says "anything", "you decide", "don't care" -> DO NOT ask questions.
+              - Set reasonable defaults and proceed immediately.
+              - Add note: "Using reasonable defaults since you're flexible"
+
+           E. Existing Project Detection:
+              - If user mentions "I have", "I already built", "extend my" -> set has_existing_project = true
+              - Extract the tech from their description.
+
+           F. Focus Area Detection:
+              - Words like "UI", "design", "frontend", "interface" -> focus_area = "frontend"
+              - Words like "API", "database", "backend", "server" -> focus_area = "backend"
+              - If both or neither -> focus_area = "balanced"
+           
+           G. Clarification Rules:
+              - Ask MAX 2 questions (merged if possible).
+              - If you can infer a reasonable default (e.g. "simple" -> beginner), DO NOT ask.
+              - If user says "any", pick a default (Intermediate, 1-2 weeks).
+              - IMPORTANT: If the user provides a long, detailed prompt with multiple preferences, extract AS MUCH AS POSSIBLE and DO NOT ask for information they already gave.
            
         4. Output:
            - If you need clarification, return JSON with "questions" (list of strings) and "reasoning".
@@ -137,12 +180,57 @@ class ProjectScoutAgent(BaseAgent):
             "difficulty": "beginner" | "intermediate" | "advanced",
             "time_budget": "weekend" | "1-2 weeks" | "3+ weeks",
             "preferred_stack": string | null,
-            "search_keywords": "string",
+            "search_keywords": "string - CRITICAL: Must be GitHub-searchable technical terms",
             "project_type": "repo" | "tutorial" | "idea",
             "recency_preference": "latest" | "any",
             "domain": string,
-            "goal_type": string
+            "goal_type": string,
+            "cost_constraints": "free-only" | "free-preferred" | "any",
+            "data_source_preference": "own-data" | "public-data" | "any",
+            "deployment_target": "local" | "web" | "mobile" | "cloud" | "any",
+            "collaboration_mode": "solo" | "team" | "any",
+            "doc_emphasis": "low" | "medium" | "high",
+            "quality_focus": "prototype" | "production",
+            "focus_area": "frontend" | "backend" | "balanced",
+            "confidence_level": "beginner-anxious" | "intermediate-confident" | "advanced",
+            "has_existing_project": boolean,
+            "existing_project_tech": string
         }}
+        
+        CRITICAL EXAMPLES FOR search_keywords (STUDY THESE):
+        
+        BAD (too vague, won't find repos):
+        ❌ "AI project ideas"
+        ❌ "portfolio projects"  
+        ❌ "NLP, recommender systems, computer vision"
+        ❌ "machine learning for beginners"
+        
+        GOOD (specific, matches GitHub):
+        ✓ "python transformers huggingface"
+        ✓ "recommendation-engine collaborative-filtering"
+        ✓ "opencv computer-vision python"
+        ✓ "scikit-learn classification"
+        ✓ "langchain rag chatbot"
+        ✓ "react flask full-stack"
+        
+        RULES FOR search_keywords:
+        1. Use actual technology names (transformers, opencv, scikit-learn)
+        2. Use hyphenated project types (recommendation-engine, chatbot, image-classifier)
+        3. Combine tech + domain (python nlp, react dashboard, pytorch vision)
+        4. NEVER use: project, ideas, portfolio, learning, beginner, intermediate, advanced
+        5. Think: "What would this repo be tagged/named on GitHub?"
+        6. CRITICAL: When user wants DIVERSE project types (NLP, CV, web apps):
+           - Generate COMMA-SEPARATED query groups: "python nlp transformers, opencv computer-vision, react flask"
+           - NOT space-separated mashups like "nlp opencv react"
+           - This ensures we search for each domain separately!
+        
+        DOMAIN -> KEYWORD MAPPING:
+        - "AI/ML" -> "python machine-learning scikit-learn" or "pytorch tensorflow"
+        - "NLP" -> "python nlp transformers spacy"
+        - "Computer Vision" -> "opencv computer-vision pytorch"
+        - "Recommender" -> "recommendation-engine collaborative-filtering"
+        - "Web + AI" -> "flask fastapi react chatbot"
+        - "Data Science" -> "python pandas jupyter data-analysis"
         """
         
         response = await self.client.chat.completions.create(
@@ -163,14 +251,64 @@ class ProjectScoutAgent(BaseAgent):
         """
         query = input_data.search_keywords or input_data.preferred_stack or input_data.goal_text
         
-        # Clean up the query by removing non-technical terms
-        unwanted_terms = ['project', 'projects', 'ideas', 'idea', 'portfolio', 'beginner', 'intermediate', 'advanced', 'learning', 'simple']
-        query_words = query.split()
-        filtered_words = [word for word in query_words if word.lower() not in unwanted_terms and not all(c in ',' for c in word)]
-        query = ' '.join(filtered_words) if filtered_words else query
+        # Safety net: Map conceptual terms to technical GitHub search terms
+        keyword_map = {
+            'nlp': 'python nlp transformers spacy',
+            'natural language processing': 'python nlp transformers',
+            'recommender': 'recommendation-engine collaborative-filtering',
+            'recommendation': 'recommendation-engine',
+            'computer vision': 'opencv computer-vision pytorch',
+            'cv': 'opencv pytorch vision',
+            'chatbot': 'chatbot langchain rasa',
+            'machine learning': 'python machine-learning scikit-learn',
+            'deep learning': 'pytorch tensorflow keras',
+            'data science': 'python pandas jupyter data-analysis',
+            'web app': 'react flask django',
+            'full stack': 'react nodejs mongodb',
+        }
+        
+        # Apply mapping if query contains conceptual terms
+        query_lower = query.lower()
+        for concept, technical in keyword_map.items():
+            if concept in query_lower:
+                query = query.replace(concept, technical)
+                query = query.replace(concept.title(), technical)
+                query = query.replace(concept.upper(), technical)
+        
+        # Clean up: remove vague non-technical terms
+        remove_terms = {'project', 'projects', 'idea', 'ideas', 'portfolio', 
+                       'beginner', 'intermediate', 'advanced', 'learning', 'simple', 'ai', 'ml'}
+        
+        # Split original query by commas to treat them as alternatives
+        # If the LLM gave us a list "NLP, CV", we shouldn't search for "NLP AND CV"
+        # We'll take the first valid technical chunk we find.
+        
+        alternatives = input_data.search_keywords.split(',') if input_data.search_keywords else [input_data.preferred_stack or input_data.goal_text]
+        
+        final_query_parts = []
+        
+        for alt in alternatives:
+            # Apply mapping to this alternative
+            alt_lower = alt.lower()
+            for concept, technical in keyword_map.items():
+                if concept in alt_lower:
+                    alt = alt.replace(concept, technical)
+                    alt = alt.replace(concept.title(), technical)
+                    alt = alt.replace(concept.upper(), technical)
+            
+            # Filter words
+            words = alt.split()
+            filtered = [w for w in words if w.lower() not in remove_terms and len(w) > 2]
+            
+            if filtered:
+                # We found a valid technical query chunk!
+                final_query_parts = filtered
+                break # Stop after finding the first good alternative (e.g. just "NLP")
+        
+        query = ' '.join(final_query_parts) if final_query_parts else (input_data.domain or "python")
         
         print(f"DEBUG: Original keywords: {input_data.search_keywords}")
-        print(f"DEBUG: Cleaned query: {query}")
+        print(f"DEBUG: Mapped query: {query}")
         
         # Construct GitHub API query
         # We want recent, non-trivial repos.
@@ -195,9 +333,13 @@ class ProjectScoutAgent(BaseAgent):
                 items = data.get("items", [])
                 
                 # Fetch READMEs for the top 3 to save time/tokens
+                # Parallelize fetching to reduce latency
+                top_items = items[:3]
+                tasks = [self._fetch_readme(client, item["owner"]["login"], item["name"]) for item in top_items]
+                readmes = await asyncio.gather(*tasks)
+                
                 detailed_repos = []
-                for item in items[:3]:
-                    readme = await self._fetch_readme(client, item["owner"]["login"], item["name"])
+                for item, readme in zip(top_items, readmes):
                     item["readme_content"] = readme
                     detailed_repos.append(item)
                 
@@ -242,6 +384,11 @@ class ProjectScoutAgent(BaseAgent):
         Difficulty: {input_data.difficulty}
         Time Budget: {input_data.time_budget}
         Preferred Stack: {input_data.preferred_stack}
+        
+        # V2 Constraints
+        Cost: {input_data.cost_constraints}
+        Deployment: {input_data.deployment_target}
+        Quality Focus: {input_data.quality_focus}
 
         Here are some candidate GitHub repositories:
         {json.dumps(repo_summaries, indent=2)}
@@ -251,6 +398,32 @@ class ProjectScoutAgent(BaseAgent):
         2. Select the top 3-5 that best match the user's goal and constraints.
         3. For each, determine difficulty, estimated time, and stack tags.
         4. Explain why it's a match.
+
+        CLASSIFICATION REQUIREMENTS (V2):
+
+        1. Diversity Guarantee (STRICT):
+           - Unless user specifically asked for ONE narrow thing (e.g. "only chatbots"), you MUST select diverse projects.
+           - Mix domains: NLP, CV, Web, Data.
+           - Mix types: Libraries, Apps, Tutorials.
+           - AVOID selecting 3 projects that are all "Python NLP libraries".
+           - Explain: "I chose varied projects (NLP, CV, Web) so you can pick what excites you."
+
+        2. Frontend/Full-stack Check:
+           - Check if repo has a frontend (React, Vue, HTML/JS).
+           - If backend-only, NOTE THIS in why_match: "Backend-only repo (great for adding your own React UI)."
+           - If full-stack, highlight it: "Includes full React frontend."
+
+        3. Template Detection:
+           - If project matches common patterns (SaaS dashboard, RAG chatbot, etc.)
+           - Mention it in why_match: "This is a great [RAG chatbot] template you can adapt"
+
+        4. Cost Constraints:
+           - If user wants free-only, prefer projects that don't require paid APIs.
+           - Note in why_match if a project uses free/open-source tools.
+
+        5. Quality Indicators:
+           - Check for good documentation, tests, CI/CD.
+           - Prioritize if user wants production-quality or portfolio showcase.
 
         Return a JSON object with a key "projects" containing a list of objects matching this schema:
         {{
@@ -288,11 +461,49 @@ class ProjectScoutAgent(BaseAgent):
         User Constraints:
         Time: {input_data.time_budget}
         Stack: {input_data.preferred_stack}
+        
+        # V2 Context
+        Doc Emphasis: {input_data.doc_emphasis}
+        Quality Focus: {input_data.quality_focus}
+        Confidence: {input_data.confidence_level}
 
         Generate:
         1. 3-4 phases.
         2. Tasks per phase.
-        3. 2-3 specific stack implementation options (e.g. "Next.js + Supabase").
+        3. 2-3 specific stack implementation options.
+        
+        ROADMAP REQUIREMENTS (V2):
+
+        1. Checkpoints (Rule 18):
+           - For each phase, add a checkpoint with:
+             * What should be working at this point
+             * A "share tip" for LinkedIn/portfolio
+           - Example: "After Phase 1: You'll have the API working. Share: 'Built my first ML API'"
+
+        2. Upgrade Path (Rule 16):
+           - Add 2-3 CONCRETE suggestions for what to build next.
+           - Be ambitious: "Add multi-modal support", "Scale to 10k users", "Add real-time collaboration".
+
+        3. Documentation Tasks (Rule 10):
+           - If doc_emphasis = high or goal_type = "portfolio":
+             * Add tasks: "Create Architecture Diagram (Mermaid/Excalidraw)", "Record 30s Demo Video/GIF", "Write 'Lessons Learned' blog post".
+
+        4. Deployment Strategy (New):
+           - Suggest a FREE/CHEAP way to deploy this specific stack.
+           - Example: "Frontend: Vercel/Netlify (Free). Backend: Render/Railway (Free Tier). DB: Supabase (Free)."
+           - If constraints are tight, suggest: "Run locally with Ollama/LocalAI to avoid API costs."
+
+        5. Testing Tasks (Rule 11):
+           - If quality_focus = "production":
+             * Add tasks for "Unit tests", "Integration tests", "CI/CD setup"
+
+        6. Scope Sanity Check (Rule 13):
+           - Before finalizing, check if phases fit time_budget.
+           - If not, add scope_note: "This is ambitious for [timeframe]. Consider these as stretch goals."
+
+        7. Safety Nudge (Rule 19):
+           - If project involves scraping, security tools, personal data:
+             * Add a note: "Reminder: Follow terms of service and local laws"
 
         Return JSON matching this schema:
         {{
@@ -303,7 +514,13 @@ class ProjectScoutAgent(BaseAgent):
             ],
             "stack_options": [
                 {{ "name": "string", "description": "string" }}
-            ]
+            ],
+            "upgrade_path": ["string"],
+            "checkpoints": [
+                {{ "phase": "string", "milestone": "string", "share_tip": "string" }}
+            ],
+            "scope_note": "string | null",
+            "deployment_strategy": "string | null"
         }}
         """
         
