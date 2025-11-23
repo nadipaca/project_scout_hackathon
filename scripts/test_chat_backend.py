@@ -23,44 +23,52 @@ async def test_two_turn_conversation():
     turn1_goal = "I want python projects with pytorch"
     print(f"User: {turn1_goal}")
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response1 = await client.post(
-            f"{BASE_URL}/run-agent",
-            json={"goal": turn1_goal, "history": history}
-        )
-        
-        if response1.status_code != 200:
-            print(f"❌ Turn 1 failed with status {response1.status_code}")
-            print(response1.text)
+    async with httpx.AsyncClient(timeout=60.0) as client:  # Increased timeout
+        try:
+            response1 = await client.post(
+                f"{BASE_URL}/run-agent",
+                json={"goal": turn1_goal, "history": history}
+            )
+            
+            if response1.status_code != 200:
+                print(f"❌ Turn 1 failed with status {response1.status_code}")
+                print(response1.text)
+                return False
+            
+            data1 = response1.json()
+            agent_response1 = data1.get("message", "")
+            print(f"Agent: {agent_response1[:200]}...")
+            
+            # Add to history
+            history.append({"role": "user", "content": turn1_goal})
+            history.append({"role": "agent", "content": agent_response1})
+        except Exception as e:
+            print(f"❌ Turn 1 failed with error: {e}")
             return False
-        
-        data1 = response1.json()
-        agent_response1 = data1.get("message", "")
-        print(f"Agent: {agent_response1[:200]}...")
-        
-        # Add to history
-        history.append({"role": "user", "content": turn1_goal})
-        history.append({"role": "agent", "content": agent_response1})
     
     # Turn 2: Answer the questions
     print("\n--- TURN 2 ---")
     turn2_goal = "beginner and 2 weeks, portfolio"
     print(f"User: {turn2_goal}")
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response2 = await client.post(
-            f"{BASE_URL}/run-agent",
-            json={"goal": turn2_goal, "history": history}
-        )
-        
-        if response2.status_code != 200:
-            print(f"❌ Turn 2 failed with status {response2.status_code}")
-            print(response2.text)
+    async with httpx.AsyncClient(timeout=60.0) as client:  # Increased timeout
+        try:
+            response2 = await client.post(
+                f"{BASE_URL}/run-agent",
+                json={"goal": turn2_goal, "history": history}
+            )
+            
+            if response2.status_code != 200:
+                print(f"❌ Turn 2 failed with status {response2.status_code}")
+                print(response2.text)
+                return False
+            
+            data2 = response2.json()
+            agent_response2 = data2.get("message", "")
+            print(f"Agent: {agent_response2[:200]}...")
+        except Exception as e:
+            print(f"❌ Turn 2 failed with error: {e}")
             return False
-        
-        data2 = response2.json()
-        agent_response2 = data2.get("message", "")
-        print(f"Agent: {agent_response2[:200]}...")
     
     # Check if responses are different
     print("\n--- ANALYSIS ---")

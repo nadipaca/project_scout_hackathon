@@ -39,7 +39,7 @@ class ProjectScoutAgent(BaseAgent):
 
     async def step(self, browser: AgentBrowser, state: AgentState) -> AgentState:
         """
-        Execute the ProjectScout workflow.
+        Execute the ProjectScout workflow (stateless version).
         """
         if state.finished:
             return state
@@ -52,80 +52,34 @@ class ProjectScoutAgent(BaseAgent):
             elif msg["role"] == "assistant":
                 context += f"Agent: {msg['content']}\n"
 
-        # Check if we're awaiting confirmation
-        if self.awaiting_confirmation:
-            # Get the last user message
-            last_user_msg = ""
-            for msg in reversed(state.messages):
-                if msg["role"] == "user":
-                    last_user_msg = msg["content"].lower().strip()
-                    break
-            
-            # Check if user wants to proceed
-            proceed_keywords = ["yes", "proceed", "go ahead", "continue", "sure", "ok", "okay", "yep", "yeah"]
-            question_keywords = ["question", "wait", "no", "change", "actually", "instead"]
-            
-            if any(keyword in last_user_msg for keyword in proceed_keywords):
-                # User confirmed, proceed with search
-                self.awaiting_confirmation = False
-                agent_input = self.pending_agent_input
-                self.pending_agent_input = None
-            elif any(keyword in last_user_msg for keyword in question_keywords):
-                # User has questions, reset and re-analyze
-                self.awaiting_confirmation = False
-                self.pending_agent_input = None
-                # Re-analyze with the new context
-                analysis = await self._analyze_request(context)
-                
-                if isinstance(analysis, Clarification):
-                    self.clarification_count += 1
-                    questions_text = "\n".join(analysis.questions)
-                    state.messages.append({"role": "assistant", "content": questions_text})
-                    return state
-                else:
-                    agent_input = analysis
-            else:
-                # Unclear response, ask again
-                state.messages.append({
-                    "role": "assistant",
-                    "content": "I didn't quite catch that. Should I proceed with searching for projects? (Yes/No)"
-                })
-                return state
-        else:
-            # 1. Analyze Request
+        print(f"\n{'='*80}")
+        print(f"DEBUG: Context being sent to _analyze_request:")
+        print(context)
+        print(f"{'='*80}\n")
+
+        # 1. Analyze Request
+        try:
             analysis = await self._analyze_request(context)
-            
-            if isinstance(analysis, Clarification):
-                # Ask questions
-                self.clarification_count += 1
-                questions_text = "\n".join(analysis.questions)
-                state.messages.append({"role": "assistant", "content": questions_text})
-                return state
-                
-            # If we got AgentInput, summarize and ask for confirmation
-            agent_input = analysis
-            
-            # Reset clarification count on successful analysis
-            self.clarification_count = 0
-            
-            # Track user response for ambiguity detection
-            if state.messages:
-                last_user_msg = next((msg["content"] for msg in reversed(state.messages) if msg["role"] == "user"), "")
-                if last_user_msg:
-                    self.recent_responses.append(last_user_msg)
-                    self.recent_responses = self.recent_responses[-5:]
-            
-            # Generate confirmation summary
-            confirmation_message = self._generate_confirmation_summary(agent_input)
-            
-            # Set awaiting confirmation state
-            self.awaiting_confirmation = True
-            self.pending_agent_input = agent_input
-            
-            state.messages.append({"role": "assistant", "content": confirmation_message})
+            print(f"DEBUG: Analysis type: {type(analysis).__name__}")
+        except Exception as e:
+            import traceback
+            error_msg = f"Error during request analysis: {str(e)}\n{traceback.format_exc()}"
+            print(f"ERROR: {error_msg}")
+            state.messages.append({
+                "role": "assistant", 
+                "content": f"I encountered an error analyzing your request. Please try rephrasing. Error: {str(e)}"
+            })
             return state
         
-        # At this point, we have confirmed agent_input and can proceed
+        if isinstance(analysis, Clarification):
+            # Ask questions
+            questions_text = "\n".join(analysis.questions)
+            print(f"DEBUG: Returning clarification questions: {questions_text}")
+            state.messages.append({"role": "assistant", "content": questions_text})
+            return state
+            
+        # If we got AgentInput, proceed directly to search
+        agent_input = analysis
         
         # 2. Search GitHub
         repos = await self._search_github(agent_input)
@@ -489,12 +443,39 @@ class ProjectScoutAgent(BaseAgent):
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
-        data = json.loads(response.choices[0].message.content)
+        
+        raw_content = response.choices[0].message.content
+        print(f"\n{'='*80}")
+        print(f"DEBUG: LLM Raw Response:")
+        print(raw_content)
+        print(f"{'='*80}\n")
+        
+        try:
+            data = json.loads(raw_content)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Failed to parse LLM response as JSON: {e}")
+            print(f"Raw content: {raw_content}")
+            raise
+        
+        print(f"DEBUG: Parsed JSON keys: {list(data.keys())}")
         
         if "questions" in data:
+            print(f"DEBUG: Returning Clarification with {len(data['questions'])} questions")
             return Clarification(**data)
         else:
-            agent_input = AgentInput(**data)
+            print(f"DEBUG: Attempting to create AgentInput from data")
+            try:
+                agent_input = AgentInput(**data)
+                print(f"DEBUG: Successfully created AgentInput")
+                print(f"  - difficulty: {agent_input.difficulty}")
+                print(f"  - time_budget: {agent_input.time_budget}")
+                print(f"  - preferred_stack: {agent_input.preferred_stack}")
+                print(f"  - search_keywords: {agent_input.search_keywords}")
+            except Exception as e:
+                print(f"ERROR: Failed to create AgentInput: {e}")
+                print(f"Data keys: {list(data.keys())}")
+                print(f"Data: {json.dumps(data, indent=2)}")
+                raise
             
             # Rule 2: Constraint Conflict Detection (Post-LLM)
             # Check if the inferred difficulty/time/domain combination is realistic
@@ -506,11 +487,13 @@ class ProjectScoutAgent(BaseAgent):
             
             # If there's a conflict, return a clarification with rescoping options
             if conflict_message:
+                print(f"DEBUG: Detected constraint conflict, returning clarification")
                 return Clarification(
                     questions=[conflict_message],
                     reasoning="Detected potential constraint conflict between difficulty, time, and scope."
                 )
             
+            print(f"DEBUG: Returning AgentInput, proceeding to search")
             return agent_input
 
     def _generate_confirmation_summary(self, agent_input: AgentInput) -> str:

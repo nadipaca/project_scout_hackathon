@@ -1,3 +1,5 @@
+import os
+import re
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -5,13 +7,12 @@ import json
 from dotenv import load_dotenv
 from typing import Optional, List, Literal
 from pydantic import BaseModel
+from openai import AsyncOpenAI
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Import your agent
-from src.agi_agents.project_scout.agent import ProjectScoutAgent
-from arena import AgentState, AgentBrowser
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
 
@@ -23,100 +24,165 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Request/Response models
+# --- Models ---
+
 class ChatTurn(BaseModel):
     role: Literal["user", "agent"]
     content: str
 
 class TaskRequest(BaseModel):
-    goal: str  # latest user message
-    history: Optional[List[ChatTurn]] = None  # full chat history from frontend
+    goal: str                      # latest user message
+    history: Optional[List[ChatTurn]] = None  # previous turns
+
+# --- Slot Extraction Logic ---
+
+LEVEL_OPTIONS = ["beginner", "intermediate", "advanced"]
+TIME_OPTIONS = ["weekend", "1-2 weeks", "1 – 2 weeks", "1 to 2 weeks", "3+ weeks", "3 plus weeks"]
+GOAL_OPTIONS = ["learning", "portfolio", "hackathon"]
+
+def extract_option(text: str, options: List[str]) -> Optional[str]:
+    text_l = text.lower()
+    for opt in options:
+        if opt in text_l:
+            return opt
+    return None
+
+def extract_slots(history: List[ChatTurn]) -> dict:
+    # Combine all *user* messages
+    combined = " ".join(m.content for m in history if m.role == "user").lower()
+
+    level = extract_option(combined, LEVEL_OPTIONS)
+    time = extract_option(combined, TIME_OPTIONS)
+    goal_type = extract_option(combined, GOAL_OPTIONS)
+
+    return {
+        "level": level,
+        "time": time,
+        "goal_type": goal_type,
+    }
+
+# --- System Prompts ---
+
+PROJECTSCOUT_CLARIFY_SYSTEM = """
+You are ProjectScout, an AI mentor.
+
+You are talking to a developer who wants project ideas.
+We are filling three fields:
+
+- experience_level: beginner / intermediate / advanced
+- time_budget: weekend / 1-2 weeks / 3+ weeks
+- goal_type: learning / portfolio / hackathon
+
+You are ONLY responsible for asking for the fields that are still missing.
+If some fields are already known from the conversation, DO NOT ask for them again.
+Ask in ONE short friendly message.
+"""
+
+PROJECTSCOUT_PLAN_SYSTEM = """
+You are ProjectScout, an AI mentor.
+
+You already know the user's:
+- experience_level
+- time_budget
+- goal_type
+
+They told you what they want to learn/build.
+Now propose 3–5 specific project ideas and a short step-by-step plan for one of them.
+Be concrete and concise.
+"""
+
+# --- Endpoint ---
 
 @app.post("/run-agent")
 async def run_agent(request: TaskRequest):
-    """
-    Stateless endpoint that accepts full chat history from frontend.
-    """
     try:
         # Log incoming request
         print(f"\n{'='*80}")
         print(f"Incoming request:")
         print(f"  Goal: {request.goal}")
         print(f"  History length: {len(request.history) if request.history else 0}")
+
+        # Build full history including the latest user message
+        # Map 'agent' role from frontend to 'assistant' for OpenAI if needed, 
+        # but here we keep 'agent' in ChatTurn and map it later.
+        history = (request.history or []) + [
+            ChatTurn(role="user", content=request.goal)
+        ]
+
+        slots = extract_slots(history)
+        print(f"  Extracted slots: {slots}")
         
-        # Create a new agent and browser for this request
-        agent = ProjectScoutAgent()
-        browser = AgentBrowser(headless=True)
-        await browser.start()
-        
-        try:
-            # Build conversation context from history
-            messages = []
-            
-            # 1. Replay chat history so the agent has context
-            if request.history:
-                print(f"  Replaying {len(request.history)} history turns:")
-                for i, turn in enumerate(request.history):
-                    role = "assistant" if turn.role == "agent" else "user"
-                    messages.append({"role": role, "content": turn.content})
-                    print(f"    Turn {i+1} ({turn.role}): {turn.content[:50]}...")
-            
-            # 2. Append the latest user message
-            messages.append({"role": "user", "content": request.goal})
-            print(f"  Total messages for agent: {len(messages)}")
-            
-            # Create agent state with full conversation history
-            state = AgentState(
-                goal=request.goal,
+        missing = [k for k, v in slots.items() if v is None]
+        print(f"  Missing slots: {missing}")
+
+        # 1) Need more info → clarifying question
+        if missing:
+            messages = [{"role": "system", "content": PROJECTSCOUT_CLARIFY_SYSTEM}]
+
+            # Give model the raw conversation so far for context
+            for turn in history:
+                role = "assistant" if turn.role == "agent" else "user"
+                messages.append({"role": role, "content": turn.content})
+
+            # Also tell it explicitly what is still missing
+            messages.append({
+                "role": "system",
+                "content": f"Fields still missing: {', '.join(missing)}. Ask ONLY about these."
+            })
+
+            completion = await client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=messages,
-                finished=False,
-                step=len(messages)
+                temperature=0.3,
             )
+            reply = completion.choices[0].message.content
             
-            print(f"  Agent state created with {len(state.messages)} messages")
-            
-            # Run the agent step
-            result_state = await agent.step(browser, state)
-            
-            print(f"  Agent returned {len(result_state.messages)} messages")
-            
-            # Extract the response
-            if result_state.messages:
-                last_message = result_state.messages[-1]
-                response_content = last_message.get("content", "")
-                
-                print(f"  Response preview: {response_content[:100]}...")
-                
-                # Try to parse as JSON if it looks like JSON (final results)
-                try:
-                    response_data = json.loads(response_content)
-                    # This is the final project results
-                    return {
-                        "status": "completed",
-                        "message": json.dumps(response_data, indent=2),
-                        "data": response_data,
-                        "finished": result_state.finished,
-                        "type": "results"
-                    }
-                except:
-                    # This is a clarification question (plain text)
-                    return {
-                        "status": "completed",
-                        "message": response_content,
-                        "finished": result_state.finished,
-                        "type": "clarification",
-                        "requires_input": True
-                    }
-            else:
-                return {
-                    "status": "error",
-                    "message": "No response from agent"
-                }
+            print(f"  Clarification reply: {reply[:100]}...")
+
+            # Return format expected by frontend
+            return {
+                "status": "completed", # "completed" just means the turn is done
+                "message": reply,
+                "data": slots, # useful for debugging
+                "finished": False, # Conversation not finished yet
+                "type": "clarification"
+            }
+
+        # 2) All slots filled → suggest projects
+        messages = [{"role": "system", "content": PROJECTSCOUT_PLAN_SYSTEM}]
+
+        # Give conversation for flavour
+        for turn in history:
+            role = "assistant" if turn.role == "agent" else "user"
+            messages.append({"role": role, "content": turn.content})
+
+        # Also provide a clean state summary
+        summary = (
+            f"User state:\n"
+            f"- experience_level: {slots['level']}\n"
+            f"- time_budget: {slots['time']}\n"
+            f"- goal_type: {slots['goal_type']}\n"
+            f"- latest_goal_message: {request.goal}"
+        )
+        messages.append({"role": "system", "content": summary})
+
+        completion = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.4,
+        )
+        reply = completion.choices[0].message.content
         
-        finally:
-            # Always clean up browser
-            await browser.stop()
-    
+        print(f"  Plan reply: {reply[:100]}...")
+
+        return {
+            "status": "completed",
+            "message": reply,
+            "data": slots,
+            "finished": True, # We provided the plan
+            "type": "results"
+        }
+
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
