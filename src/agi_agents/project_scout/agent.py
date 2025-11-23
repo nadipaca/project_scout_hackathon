@@ -280,10 +280,12 @@ class ProjectScoutAgent(BaseAgent):
                        'beginner', 'intermediate', 'advanced', 'learning', 'simple', 'ai', 'ml'}
         
         # Split by commas to handle diverse queries
-        # E.g., "python nlp transformers, opencv pytorch, react flask" -> try each separately
+        # E.g., "python nlp transformers, opencv pytorch, react flask" -> search ALL separately
         alternatives = [q.strip() for q in input_data.search_keywords.split(',')] if input_data.search_keywords else [input_data.preferred_stack or input_data.goal_text]
         
-        # Try each alternative until we find results
+        # Collect results from ALL alternatives for true diversity
+        all_repos = []
+        
         async with httpx.AsyncClient() as client:
             for alt_query in alternatives:
                 # Clean this specific alternative
@@ -300,7 +302,7 @@ class ProjectScoutAgent(BaseAgent):
                     "q": f"{query} created:>2023-01-01",
                     "sort": "stars",
                     "order": "desc",
-                    "per_page": 10
+                    "per_page": 5  # Fetch fewer per domain to get variety
                 }
                 
                 headers = {"Accept": "application/vnd.github.v3+json"}
@@ -313,24 +315,29 @@ class ProjectScoutAgent(BaseAgent):
                         data = resp.json()
                         items = data.get("items", [])
                         
-                        if items:  # Found results!
+                        if items:
                             print(f"DEBUG: Found {len(items)} repositories for query: {query}")
-                            # Fetch READMEs for the top 3
-                            top_items = items[:3]
-                            tasks = [self._fetch_readme(client, item["owner"]["login"], item["name"]) for item in top_items]
-                            readmes = await asyncio.gather(*tasks)
-                            
-                            detailed_repos = []
-                            for item, readme in zip(top_items, readmes):
-                                item["readme_content"] = readme
-                                detailed_repos.append(item)
-                            
-                            return detailed_repos  # Return first successful search
+                            # Take top 2 from each domain for diversity
+                            all_repos.extend(items[:2])
                 except Exception as e:
                     print(f"GitHub search failed for '{query}': {e}")
                     continue  # Try next alternative
 
-            # All alternatives failed
+            # If we found repos across domains, fetch READMEs
+            if all_repos:
+                # Limit to top 10 overall
+                top_items = all_repos[:10]
+                tasks = [self._fetch_readme(client, item["owner"]["login"], item["name"]) for item in top_items]
+                readmes = await asyncio.gather(*tasks)
+                
+                detailed_repos = []
+                for item, readme in zip(top_items, readmes):
+                    item["readme_content"] = readme
+                    detailed_repos.append(item)
+                
+                return detailed_repos
+            
+            # No results from any alternative
             print("DEBUG: No results found for any alternative")
             return []
 
