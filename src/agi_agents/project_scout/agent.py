@@ -32,6 +32,10 @@ class ProjectScoutAgent(BaseAgent):
         # Advanced rules tracking
         self.clarification_count = 0
         self.recent_responses = []
+        
+        # Confirmation tracking
+        self.awaiting_confirmation = False
+        self.pending_agent_input = None
 
     async def step(self, browser: AgentBrowser, state: AgentState) -> AgentState:
         """
@@ -41,11 +45,6 @@ class ProjectScoutAgent(BaseAgent):
             return state
 
         # Collect all user messages to understand context
-        # In the demo script, state.goal is the initial input.
-        # Subsequent user inputs might be in state.messages if we were in a chat loop,
-        # but the harness/demo structure is a bit rigid.
-        # For now, let's assume state.goal + any "user" messages in state.messages form the context.
-        
         context = f"Initial Goal: {state.goal}\n"
         for msg in state.messages:
             if msg["role"] == "user":
@@ -53,31 +52,80 @@ class ProjectScoutAgent(BaseAgent):
             elif msg["role"] == "assistant":
                 context += f"Agent: {msg['content']}\n"
 
-        # 1. Analyze Request
-        analysis = await self._analyze_request(context)
-        
-        if isinstance(analysis, Clarification):
-            # Ask questions
-            self.clarification_count += 1  # Track for ambiguity cooldown
-            questions_text = "\n".join(analysis.questions)
-            state.messages.append({"role": "assistant", "content": questions_text})
-            # We are NOT finished, we wait for user input.
-            # The demo script needs to handle this by checking if finished is False and last msg is assistant.
-            return state
+        # Check if we're awaiting confirmation
+        if self.awaiting_confirmation:
+            # Get the last user message
+            last_user_msg = ""
+            for msg in reversed(state.messages):
+                if msg["role"] == "user":
+                    last_user_msg = msg["content"].lower().strip()
+                    break
             
-        # If we got AgentInput, we proceed
-        agent_input = analysis
+            # Check if user wants to proceed
+            proceed_keywords = ["yes", "proceed", "go ahead", "continue", "sure", "ok", "okay", "yep", "yeah"]
+            question_keywords = ["question", "wait", "no", "change", "actually", "instead"]
+            
+            if any(keyword in last_user_msg for keyword in proceed_keywords):
+                # User confirmed, proceed with search
+                self.awaiting_confirmation = False
+                agent_input = self.pending_agent_input
+                self.pending_agent_input = None
+            elif any(keyword in last_user_msg for keyword in question_keywords):
+                # User has questions, reset and re-analyze
+                self.awaiting_confirmation = False
+                self.pending_agent_input = None
+                # Re-analyze with the new context
+                analysis = await self._analyze_request(context)
+                
+                if isinstance(analysis, Clarification):
+                    self.clarification_count += 1
+                    questions_text = "\n".join(analysis.questions)
+                    state.messages.append({"role": "assistant", "content": questions_text})
+                    return state
+                else:
+                    agent_input = analysis
+            else:
+                # Unclear response, ask again
+                state.messages.append({
+                    "role": "assistant",
+                    "content": "I didn't quite catch that. Should I proceed with searching for projects? (Yes/No)"
+                })
+                return state
+        else:
+            # 1. Analyze Request
+            analysis = await self._analyze_request(context)
+            
+            if isinstance(analysis, Clarification):
+                # Ask questions
+                self.clarification_count += 1
+                questions_text = "\n".join(analysis.questions)
+                state.messages.append({"role": "assistant", "content": questions_text})
+                return state
+                
+            # If we got AgentInput, summarize and ask for confirmation
+            agent_input = analysis
+            
+            # Reset clarification count on successful analysis
+            self.clarification_count = 0
+            
+            # Track user response for ambiguity detection
+            if state.messages:
+                last_user_msg = next((msg["content"] for msg in reversed(state.messages) if msg["role"] == "user"), "")
+                if last_user_msg:
+                    self.recent_responses.append(last_user_msg)
+                    self.recent_responses = self.recent_responses[-5:]
+            
+            # Generate confirmation summary
+            confirmation_message = self._generate_confirmation_summary(agent_input)
+            
+            # Set awaiting confirmation state
+            self.awaiting_confirmation = True
+            self.pending_agent_input = agent_input
+            
+            state.messages.append({"role": "assistant", "content": confirmation_message})
+            return state
         
-        # Reset clarification count on successful analysis
-        self.clarification_count = 0
-        
-        # Track user response for ambiguity detection
-        if state.messages:
-            last_user_msg = next((msg["content"] for msg in reversed(state.messages) if msg["role"] == "user"), "")
-            if last_user_msg:
-                self.recent_responses.append(last_user_msg)
-                # Keep only last 5 responses
-                self.recent_responses = self.recent_responses[-5:]
+        # At this point, we have confirmed agent_input and can proceed
         
         # 2. Search GitHub
         repos = await self._search_github(agent_input)
@@ -208,6 +256,20 @@ class ProjectScoutAgent(BaseAgent):
         prompt = f"""
         You are ProjectScout AI. Analyze the conversation to understand the user's project goal.
         
+        **CRITICAL INSTRUCTION - READ FIRST:**
+        Before asking ANY questions, EXTRACT what the user has ALREADY told you:
+        - If they said "intermediate" → you know difficulty=intermediate
+        - If they said "Spring AI" → you know preferred_stack=Spring AI  
+        - If they said "2 weeks" → you know time_budget=1-2 weeks
+        - If they said "portfolio" → you know goal_type=portfolio
+        
+        ONLY ask about the 3 REQUIRED fields that are MISSING:
+        1. difficulty (if not mentioned)
+        2. time_budget (if not mentioned)
+        3. goal_type (if not mentioned)
+        
+        DO NOT ask about fields the user already provided!
+        
         Context:
         {context}
         {advanced_context}
@@ -292,6 +354,10 @@ class ProjectScoutAgent(BaseAgent):
               - Ask MAX 3 questions total (can be merged into conversational format).
               - Make questions friendly and helpful, not interrogative.
               
+              **CRITICAL: ACKNOWLEDGE SPECIAL REQUIREMENTS FIRST**
+              If the user mentions special requirements (privacy, SPA behavior, localization, existing project, etc.),
+              ACKNOWLEDGE these in your questions to show you understood their needs.
+              
               EXAMPLES:
               
               ❌ BAD (too aggressive inference):
@@ -312,6 +378,24 @@ class ProjectScoutAgent(BaseAgent):
               ✅ GOOD (user wants defaults):
               User: "Surprise me with any Python project, you decide"
               Agent: *proceeds with defaults* → OK because user explicitly delegated
+              
+              ✅ GOOD (acknowledges special requirement - SPA):
+              User: "I like those websites where the page doesn't reload and data updates magically"
+              Agent: "Sounds like you're interested in single-page apps (SPAs) with live updates! 
+                     Do you prefer React, Vue, or should I pick one for you?
+                     Also, what's your experience level?"
+              
+              ✅ GOOD (acknowledges special requirement - Privacy):
+              User: "I want an AI project that analyzes my journal, but data must stay private on my machine"
+              Agent: "Got it—privacy is key. I'll focus on local-only solutions.
+                     Are you okay installing a local model (more setup), or prefer simpler offline libraries?
+                     Also, what's your experience level?"
+              
+              ✅ GOOD (acknowledges special requirement - Localization):
+              User: "I want a portfolio project for the Indian market, rent-splitting app, React + Node, 2 weeks"
+              Agent: "Nice idea—a roommate rent-splitting app for India using React + Node!
+                     Is this a solo project or will you build with friends?
+                     Do you prefer English only, or a mix of English and Hindi?"
            
         4. Output:
            - If you need clarification, return JSON with "questions" (list of strings) and "reasoning".
@@ -378,6 +462,11 @@ class ProjectScoutAgent(BaseAgent):
            - Generate COMMA-SEPARATED query groups: "python nlp transformers, opencv computer-vision, [user-stack] web"
            - NOT space-separated mashups like "nlp opencv react"
            - This ensures we search for each domain separately!
+        7. **NICHE USE CASES**: For specific domains (rent-splitting, journal analysis, etc.):
+           - Prefer BROADER tech stack terms over overly specific domain keywords
+           - Example: "React + Node rent-splitting" → "react nodejs" (NOT "react node rent-splitting bills-management")
+           - Example: "journal analysis local AI" → "python nlp" or "local-ai" (NOT "local-ai journal-analysis")
+           - Reason: GitHub may not have repos matching ALL specific keywords, but has many repos with the tech stack
         
         DOMAIN -> KEYWORD MAPPING (Use user's preferred stack when available):
         - "AI/ML" -> Infer from user's tech stack:
@@ -423,6 +512,49 @@ class ProjectScoutAgent(BaseAgent):
                 )
             
             return agent_input
+
+    def _generate_confirmation_summary(self, agent_input: AgentInput) -> str:
+        """
+        Generate a friendly confirmation message summarizing what the agent understood.
+        """
+        summary_parts = []
+        
+        # Start with a friendly acknowledgment
+        summary_parts.append("Great! Here's what I understood from our conversation:\n")
+        
+        # Core requirements
+        summary_parts.append(f"📋 **Project Requirements:**")
+        summary_parts.append(f"  • Domain: {agent_input.domain}")
+        summary_parts.append(f"  • Tech Stack: {agent_input.preferred_stack or 'Flexible'}")
+        summary_parts.append(f"  • Difficulty: {agent_input.difficulty}")
+        summary_parts.append(f"  • Time Budget: {agent_input.time_budget}")
+        summary_parts.append(f"  • Goal: {agent_input.goal_type}")
+        
+        # Additional constraints if specified
+        if agent_input.cost_constraints != "any":
+            summary_parts.append(f"  • Cost: {agent_input.cost_constraints}")
+        
+        if agent_input.deployment_target != "any":
+            summary_parts.append(f"  • Deployment: {agent_input.deployment_target}")
+        
+        if agent_input.quality_focus == "production":
+            summary_parts.append(f"  • Focus: Production-ready code with tests & docs")
+        
+        if agent_input.privacy_mode:
+            summary_parts.append(f"  • Privacy: Local-only solutions preferred")
+        
+        if agent_input.has_existing_project:
+            summary_parts.append(f"  • Mode: Upgrading existing {agent_input.existing_project_tech} project")
+        
+        # Search strategy
+        summary_parts.append(f"\n🔍 **Search Strategy:**")
+        summary_parts.append(f"  I'll search GitHub for: `{agent_input.search_keywords}`")
+        
+        # Confirmation question
+        summary_parts.append(f"\n❓ **Do you have any questions, or should I proceed with searching for projects?**")
+        summary_parts.append(f"  (Reply 'yes' to proceed, or ask any questions to refine the search)")
+        
+        return "\n".join(summary_parts)
 
     async def _search_github(self, input_data: AgentInput) -> List[Dict]:
         """
