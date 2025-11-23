@@ -213,9 +213,11 @@ class ProjectScoutAgent(BaseAgent):
         {advanced_context}
         
         Your task:
-        1. Infer the following fields:
+        1. Infer the following fields FROM THE ENTIRE CONVERSATION:
            - domain (e.g. AI, web, mobile, backend, data science)
            - tech_stack (infer from user's request - could be any language/framework combination)
+             **CRITICAL**: If the user mentioned a specific tech stack in their INITIAL request (e.g., "Spring AI", "React", "Python"),
+             you MUST preserve it even when processing follow-up answers. DO NOT default to Python unless explicitly mentioned.
            - difficulty (beginner/intermediate/advanced)
            - time_budget (weekend/1-2 weeks/3+ weeks)
            - project_type (repo/tutorial/idea)
@@ -234,12 +236,25 @@ class ProjectScoutAgent(BaseAgent):
            - has_existing_project (true/false)
            - existing_project_tech (string)
            
-        2. Check for MISSING IMPORTANT INFO.
-           - If difficulty is unknown, ask.
-           - If recency matters (e.g. AI) and is unknown, ask.
-           - If tech_stack is unknown for a general request, ask.
-           - If time_budget is unknown, default to "1-2 weeks".
-           - If project_type is unknown, default to "repo".
+           EXAMPLE OF PRESERVING TECH STACK:
+           Initial Goal: "Give me some spring AI projects"
+           User: "Intermediate"
+           User: "2 weeks and I am doing for portfolio"
+           → preferred_stack MUST be "Spring AI" or "Java Spring AI" (NOT Python!)
+           → search_keywords MUST be "spring-ai" or similar (NOT "python web"!)
+           
+        2. MINIMUM INFORMATION THRESHOLD (NEW):
+           Before proceeding to search, you MUST have EXPLICIT information about:
+           - difficulty (beginner/intermediate/advanced)
+           - time_budget (weekend/1-2 weeks/3+ weeks)
+           - goal_type (portfolio/learning/hackathon/production)
+           
+           If the user provides a MINIMAL/GENERAL request (e.g., "Give me a spring AI project", "I want a Python project"),
+           you MUST ask clarifying questions to gather this information.
+           
+           ONLY skip questions if:
+           - User explicitly says "you decide", "anything", "don't care" (Ambiguity Handling)
+           - User provides DETAILED information already (e.g., "I'm a beginner looking for a weekend Python web project for my portfolio")
            
         3. ADVANCED ANALYSIS RULES (V2):
            
@@ -257,8 +272,8 @@ class ProjectScoutAgent(BaseAgent):
               - Words like "confident", "experienced", "familiar" -> set confidence_level = "advanced"
               - Default -> "intermediate-confident"
 
-           D. Ambiguity Handling:
-              - If user says "anything", "you decide", "don't care" -> DO NOT ask questions.
+           D. Ambiguity Handling (User Wants Defaults):
+              - If user says "anything", "you decide", "don't care", "surprise me" -> DO NOT ask questions.
               - Set reasonable defaults and proceed immediately.
               - Add note: "Using reasonable defaults since you're flexible"
 
@@ -271,11 +286,32 @@ class ProjectScoutAgent(BaseAgent):
               - Words like "API", "database", "backend", "server" -> focus_area = "backend"
               - If both or neither -> focus_area = "balanced"
            
-           G. Clarification Rules:
-              - Ask MAX 2 questions (merged if possible).
-              - If you can infer a reasonable default (e.g. "simple" -> beginner), DO NOT ask.
-              - If user says "any", pick a default (Intermediate, 1-2 weeks).
-              - IMPORTANT: If the user provides a long, detailed prompt with multiple preferences, extract AS MUCH AS POSSIBLE and DO NOT ask for information they already gave.
+           G. Clarification Rules (UPDATED):
+              - For MINIMAL requests (just tech stack or domain): ASK 2-3 questions about difficulty, time, and goal.
+              - For DETAILED requests: Extract as much as possible, ask only about truly missing critical info.
+              - Ask MAX 3 questions total (can be merged into conversational format).
+              - Make questions friendly and helpful, not interrogative.
+              
+              EXAMPLES:
+              
+              ❌ BAD (too aggressive inference):
+              User: "Give me a spring AI project"
+              Agent: *proceeds with defaults* → NO! ASK QUESTIONS FIRST!
+              
+              ✅ GOOD (asks questions):
+              User: "Give me a spring AI project"
+              Agent: "Great choice! Spring AI is exciting. To find the perfect project for you, I need to know:
+                     1. What's your experience level? (beginner/intermediate/advanced)
+                     2. How much time do you have? (weekend/1-2 weeks/3+ weeks)
+                     3. What's your goal? (learning/portfolio/hackathon)"
+              
+              ✅ GOOD (detailed request, minimal questions):
+              User: "I'm a beginner looking for a weekend Python web project for my portfolio"
+              Agent: *has difficulty=beginner, time=weekend, goal=portfolio* → Can proceed or ask 1 clarifying question
+              
+              ✅ GOOD (user wants defaults):
+              User: "Surprise me with any Python project, you decide"
+              Agent: *proceeds with defaults* → OK because user explicitly delegated
            
         4. Output:
            - If you need clarification, return JSON with "questions" (list of strings) and "reasoning".
@@ -292,8 +328,8 @@ class ProjectScoutAgent(BaseAgent):
             "goal_text": "summary of goal",
             "difficulty": "beginner" | "intermediate" | "advanced",
             "time_budget": "weekend" | "1-2 weeks" | "3+ weeks",
-            "preferred_stack": string | null,
-            "search_keywords": "string - CRITICAL: Must be GitHub-searchable technical terms",
+            "preferred_stack": "string | null - MUST match user's initial tech preference (e.g., 'Spring AI', 'React', 'Python')",
+            "search_keywords": "string - CRITICAL: Must be GitHub-searchable technical terms derived from preferred_stack",
             "project_type": "repo" | "tutorial" | "idea",
             "recency_preference": "latest" | "any",
             "domain": string,
