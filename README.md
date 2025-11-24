@@ -22,7 +22,7 @@ ProjectScout is a conversational AI agent that:
 
 ## 📹 Video Tutorial
 
-<video src="./docs/assets/demo.gif" controls width="800"></video>
+<img src="./docs/assets/demo.gif" width="800" alt="Video Tutorial">
 
 ## ✨ Features
 
